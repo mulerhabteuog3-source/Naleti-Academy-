@@ -821,6 +821,7 @@ async function upDel(id){
  draw();
 }
 
+const IMP_SECS=[["stu","Students","id,name,grade,prog,parent_name,phone,sex"],["staff","Staff","id,name,type,phone"],["fee","Fees","student_id,amount,date,note"],["lib","Library","id,title,author,copies"],["news","News","title,date"],["tt","Timetable","grade,program,day,period,subject,teacher_id"]];
 async function impPick(inp,sec){
  const f=inp.files[0];if(!f)return;
  if(f.size>2*1024*1024){UP_MSG="CSV too large (max 2 MB)";return draw()}
@@ -841,7 +842,7 @@ function upS(){
  return `<div class="card"><h2>Upload</h2>
  <div class="row"><label>Section <select onchange="upGo(this.value)">${opts}</select></label>
  <label>File <input type="file" onchange="upPick(this)"></label></div>
- ${adm?`<div class="row"><label>Import students CSV (id,name,grade,prog,parent_name,phone,sex) <input type="file" accept=".csv,text/csv" onchange="impPick(this,'stu')"></label><label>Import staff CSV (id,name,type,phone) <input type="file" accept=".csv,text/csv" onchange="impPick(this,'staff')"></label></div>`:""}
+ ${adm?`<div class="card"><h3>Import CSV (admin)</h3><div class="row">${IMP_SECS.map(([k,l,c])=>`<label title="${e(c)}">${e(l)} <input type="file" accept=".csv,text/csv" onchange="impPick(this,'${k}')"></label>`).join("")}</div><p class="mut">${IMP_SECS.map(([k,l,c])=>`<b>${e(l)}</b>: ${e(c)}`).join("<br>")}</p></div>`:""}
  ${UP_MSG?`<p role="status">${e(UP_MSG)}</p>`:""}
  <table><thead><tr><th>File</th><th>Size</th><th>By</th><th>Date</th><th></th></tr></thead><tbody>${rows||`<tr><td colspan="5">No files in this section.</td></tr>`}</tbody></table></div>`;
 }

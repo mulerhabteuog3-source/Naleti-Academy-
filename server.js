@@ -445,28 +445,36 @@ function parseCsvText(txt) {
   return rows.map(r => Object.fromEntries(head.map((h, i) => [h, r[i] || ""])));
 }
 
+const IMPORT_SPEC = {
+  stu: { cols: "id,name,grade,prog,parent_name,phone,sex", key: r => r.id, make: r => ({ id: r.id, name: r.name, grade: isNaN(Number(r.grade)) ? r.grade : Number(r.grade), prog: r.prog || "", pn: r.parent_name || "", phone: r.phone || "", sex: r.sex || "" }) },
+  staff: { cols: "id,name,type,phone", key: r => r.id, make: r => ({ id: r.id, name: r.name, type: r.type === "teacher" ? "teacher" : "staff", phone: r.phone || "" }) },
+  fee: { cols: "student_id,amount,date,note", key: () => null, make: (r, list) => {
+    const n = list.length + 1;
+    return { id: Date.now().toString(36) + n, no: "R-" + String(n).padStart(4, "0"), sid: r.student_id, date: r.date || new Date().toISOString().slice(0, 10), amt: Number(r.amount), note: r.note || "" };
+  }, valid: r => r.student_id && Number(r.amount) > 0 },
+  lib: { cols: "id,title,author,copies", key: r => r.id, make: r => ({ id: r.id, title: r.title, author: r.author || "", copies: Number(r.copies) || 1 }) },
+  news: { cols: "title,date", key: () => null, make: (r, list) => ({ id: Date.now().toString(36) + list.length, t: r.title, d: r.date || new Date().toISOString().slice(0, 10) }), valid: r => r.title },
+  tt: { cols: "grade,program,day,period,subject,teacher_id", key: () => null, make: r => ({ g: r.grade, p: r.program, d: r.day, s: r.period, subj: r.subject, tid: r.teacher_id }), valid: r => r.grade && r.day && r.period }
+};
+
 app.post("/api/import/:section", (req, res) => {
   const u = requireAdmin(req, res);
   if (!u) return;
   const sec = req.params.section;
-  if (sec !== "stu" && sec !== "staff") return res.status(400).json({ error: "bad" });
+  const spec = IMPORT_SPEC[sec];
+  if (!spec) return res.status(400).json({ error: "bad" });
   const rows = parseCsvText(req.body.text || "");
   if (!rows.length || rows.length > 2000) return res.status(400).json({ error: "badfile" });
   const list = DB.docs[sec] || (DB.docs[sec] = []);
-  const seen = new Set(list.map(x => String(x.id).toLowerCase()));
+  const seen = new Set(spec.key ? list.map(x => String(spec.key(x) || "").toLowerCase()) : []);
   let added = 0, skipped = 0;
   for (const r of rows) {
-    const id = String(r.id || "").trim();
-    const name = String(r.name || "").trim();
-    if (!id || !name || seen.has(id.toLowerCase())) { skipped++; continue; }
-    if (sec === "stu") {
-      const grade = Number(r.grade);
-      list.push({ id, name, grade: isNaN(grade) ? r.grade : grade, prog: r.prog || "", pn: r.parent_name || "", phone: r.phone || "", sex: r.sex || "" });
-    } else {
-      const type = r.type === "teacher" ? "teacher" : "staff";
-      list.push({ id, name, type, phone: r.phone || "" });
-    }
-    seen.add(id.toLowerCase());
+    const valid = spec.valid ? spec.valid(r) : (r.id && r.name);
+    if (!valid) { skipped++; continue; }
+    const k = spec.key ? String(spec.key(r) || "").toLowerCase() : null;
+    if (k !== null && seen.has(k)) { skipped++; continue; }
+    list.push(spec.make(r, list));
+    if (k !== null) seen.add(k);
     added++;
   }
   DB.v[sec] = (DB.v[sec] || 0) + 1;
