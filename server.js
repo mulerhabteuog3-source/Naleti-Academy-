@@ -368,6 +368,63 @@ app.post("/api/restore", (req, res) => {
   res.json({ ok: 1 });
 });
 
+/* ---------- file uploads (attachments per section) ---------- */
+const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, "uploads");
+const UP_SECTIONS = ["stu", "staff", "att", "tatt", "mk", "tt", "fee", "lib", "news", "card", "rep"];
+const UP_ROLES = ["admin", "teacher", "staff"];
+const UP_MAX = 8 * 1024 * 1024;
+const upIndex = () => (DB.files || (DB.files = []));
+
+app.get("/api/files", (req, res) => {
+  const u = requireAuth(req, res);
+  if (!u) return;
+  if (!UP_ROLES.includes(u.role)) return res.status(403).json({ error: "blocked" });
+  const sec = String(req.query.section || "");
+  const files = upIndex()
+    .filter(f => !sec || f.section === sec)
+    .map(({ id, section, name, size, by, at }) => ({ id, section, name, size, by, at }));
+  res.json({ files });
+});
+
+app.post("/api/files", (req, res) => {
+  const u = requireAuth(req, res);
+  if (!u) return;
+  if (!UP_ROLES.includes(u.role)) return res.status(403).json({ error: "blocked" });
+  const section = String(req.body.section || "");
+  if (!UP_SECTIONS.includes(section)) return res.status(400).json({ error: "bad" });
+  const name = path.basename(String(req.body.name || "file")).replace(/[^\w.\- ]/g, "_").slice(0, 120) || "file";
+  const buf = Buffer.from(String(req.body.data || ""), "base64");
+  if (!buf.length || buf.length > UP_MAX) return res.status(400).json({ error: "size" });
+  const id = crypto.randomBytes(12).toString("hex");
+  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+  fs.writeFileSync(path.join(UPLOAD_DIR, id), buf);
+  const rec = { id, section, name, size: buf.length, by: u.name || u.id, at: new Date().toISOString() };
+  upIndex().push(rec);
+  save();
+  res.json({ file: rec });
+});
+
+app.get("/api/files/:id", (req, res) => {
+  const u = requireAuth(req, res);
+  if (!u) return;
+  if (!UP_ROLES.includes(u.role)) return res.status(403).json({ error: "blocked" });
+  const f = upIndex().find(x => x.id === req.params.id);
+  if (!f) return res.status(404).json({ error: "bad" });
+  res.download(path.join(UPLOAD_DIR, f.id), f.name);
+});
+
+app.delete("/api/files/:id", (req, res) => {
+  const u = requireAdmin(req, res);
+  if (!u) return;
+  const i = upIndex().findIndex(x => x.id === req.params.id);
+  if (i < 0) return res.status(404).json({ error: "bad" });
+  try { fs.unlinkSync(path.join(UPLOAD_DIR, upIndex()[i].id)); } catch (e) {}
+  upIndex().splice(i, 1);
+  save();
+  res.json({ ok: 1 });
+});
+
+
 app.get("/health", (req, res) => res.status(200).send("ok"));
 app.get("/api/health", (req, res) => res.json({ ok: 1, app: "naleti" }));
 
