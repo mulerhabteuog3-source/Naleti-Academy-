@@ -820,6 +820,18 @@ async function upDel(id){
  try{await api("DELETE","/files/"+id);UP_MSG="Deleted";await upLoad()}catch(x){UP_MSG="Delete failed"}
  draw();
 }
+
+async function impPick(inp,sec){
+ const f=inp.files[0];if(!f)return;
+ if(f.size>2*1024*1024){UP_MSG="CSV too large (max 2 MB)";return draw()}
+ const txt=await f.text();
+ try{
+  const r=await api("POST","/import/"+sec,{text:txt});
+  UP_MSG="Imported "+r.added+", skipped "+r.skipped+" (duplicates or missing id/name)";
+  S[sec]=(await api("GET","/state")).docs[sec];V[sec]=r.v;
+ }catch(x){UP_MSG="Import failed: "+(x==="badfile"?"empty file or more than 2000 rows":t(x))}
+ inp.value="";draw();
+}
 function upS(){
  if(MODE!=="server")return `<div class="card"><p>Uploads need the server version of the app.</p></div>`;
  if(!UP_READY)upLoad().then(()=>draw());
@@ -829,6 +841,7 @@ function upS(){
  return `<div class="card"><h2>Upload</h2>
  <div class="row"><label>Section <select onchange="upGo(this.value)">${opts}</select></label>
  <label>File <input type="file" onchange="upPick(this)"></label></div>
+ ${adm?`<div class="row"><label>Import students CSV (id,name,grade,prog,parent_name,phone,sex) <input type="file" accept=".csv,text/csv" onchange="impPick(this,'stu')"></label><label>Import staff CSV (id,name,type,phone) <input type="file" accept=".csv,text/csv" onchange="impPick(this,'staff')"></label></div>`:""}
  ${UP_MSG?`<p role="status">${e(UP_MSG)}</p>`:""}
  <table><thead><tr><th>File</th><th>Size</th><th>By</th><th>Date</th><th></th></tr></thead><tbody>${rows||`<tr><td colspan="5">No files in this section.</td></tr>`}</tbody></table></div>`;
 }

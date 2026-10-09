@@ -425,6 +425,55 @@ app.delete("/api/files/:id", (req, res) => {
 });
 
 
+/* ---------- CSV import (admin): students and staff ---------- */
+function parseCsvText(txt) {
+  const lines = String(txt).replace(/^\uFEFF/, "").split(/\r?\n/).filter(l => l.trim());
+  const cells = l => {
+    const out = []; let cur = "", q = false;
+    for (let i = 0; i < l.length; i++) {
+      const c = l[i];
+      if (q) { if (c === '"' && l[i + 1] === '"') { cur += '"'; i++; } else if (c === '"') q = false; else cur += c; }
+      else if (c === '"') q = true;
+      else if (c === ",") { out.push(cur.trim()); cur = ""; }
+      else cur += c;
+    }
+    out.push(cur.trim());
+    return out;
+  };
+  const rows = lines.map(cells);
+  const head = rows.shift().map(h => h.toLowerCase());
+  return rows.map(r => Object.fromEntries(head.map((h, i) => [h, r[i] || ""])));
+}
+
+app.post("/api/import/:section", (req, res) => {
+  const u = requireAdmin(req, res);
+  if (!u) return;
+  const sec = req.params.section;
+  if (sec !== "stu" && sec !== "staff") return res.status(400).json({ error: "bad" });
+  const rows = parseCsvText(req.body.text || "");
+  if (!rows.length || rows.length > 2000) return res.status(400).json({ error: "badfile" });
+  const list = DB.docs[sec] || (DB.docs[sec] = []);
+  const seen = new Set(list.map(x => String(x.id).toLowerCase()));
+  let added = 0, skipped = 0;
+  for (const r of rows) {
+    const id = String(r.id || "").trim();
+    const name = String(r.name || "").trim();
+    if (!id || !name || seen.has(id.toLowerCase())) { skipped++; continue; }
+    if (sec === "stu") {
+      const grade = Number(r.grade);
+      list.push({ id, name, grade: isNaN(grade) ? r.grade : grade, prog: r.prog || "", pn: r.parent_name || "", phone: r.phone || "", sex: r.sex || "" });
+    } else {
+      const type = r.type === "teacher" ? "teacher" : "staff";
+      list.push({ id, name, type, phone: r.phone || "" });
+    }
+    seen.add(id.toLowerCase());
+    added++;
+  }
+  DB.v[sec] = (DB.v[sec] || 0) + 1;
+  save();
+  res.json({ added, skipped, v: DB.v[sec] });
+});
+
 app.get("/health", (req, res) => res.status(200).send("ok"));
 app.get("/api/health", (req, res) => res.json({ ok: 1, app: "naleti" }));
 
