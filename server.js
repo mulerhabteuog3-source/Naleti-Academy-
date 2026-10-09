@@ -368,6 +368,120 @@ app.post("/api/restore", (req, res) => {
   res.json({ ok: 1 });
 });
 
+/* ---------- file uploads (attachments per section) ---------- */
+const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, "uploads");
+const UP_SECTIONS = ["stu", "staff", "att", "tatt", "mk", "tt", "fee", "lib", "news", "card", "rep"];
+const UP_ROLES = ["admin", "teacher", "staff"];
+const UP_MAX = 8 * 1024 * 1024;
+const upIndex = () => (DB.files || (DB.files = []));
+
+app.get("/api/files", (req, res) => {
+  const u = requireAuth(req, res);
+  if (!u) return;
+  if (!UP_ROLES.includes(u.role)) return res.status(403).json({ error: "blocked" });
+  const sec = String(req.query.section || "");
+  const files = upIndex()
+    .filter(f => !sec || f.section === sec)
+    .map(({ id, section, name, size, by, at }) => ({ id, section, name, size, by, at }));
+  res.json({ files });
+});
+
+app.post("/api/files", (req, res) => {
+  const u = requireAuth(req, res);
+  if (!u) return;
+  if (!UP_ROLES.includes(u.role)) return res.status(403).json({ error: "blocked" });
+  const section = String(req.body.section || "");
+  if (!UP_SECTIONS.includes(section)) return res.status(400).json({ error: "bad" });
+  const name = path.basename(String(req.body.name || "file")).replace(/[^\w.\- ]/g, "_").slice(0, 120) || "file";
+  const buf = Buffer.from(String(req.body.data || ""), "base64");
+  if (!buf.length || buf.length > UP_MAX) return res.status(400).json({ error: "size" });
+  const id = crypto.randomBytes(12).toString("hex");
+  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+  fs.writeFileSync(path.join(UPLOAD_DIR, id), buf);
+  const rec = { id, section, name, size: buf.length, by: u.name || u.id, at: new Date().toISOString() };
+  upIndex().push(rec);
+  save();
+  res.json({ file: rec });
+});
+
+app.get("/api/files/:id", (req, res) => {
+  const u = requireAuth(req, res);
+  if (!u) return;
+  if (!UP_ROLES.includes(u.role)) return res.status(403).json({ error: "blocked" });
+  const f = upIndex().find(x => x.id === req.params.id);
+  if (!f) return res.status(404).json({ error: "bad" });
+  res.download(path.join(UPLOAD_DIR, f.id), f.name);
+});
+
+app.delete("/api/files/:id", (req, res) => {
+  const u = requireAdmin(req, res);
+  if (!u) return;
+  const i = upIndex().findIndex(x => x.id === req.params.id);
+  if (i < 0) return res.status(404).json({ error: "bad" });
+  try { fs.unlinkSync(path.join(UPLOAD_DIR, upIndex()[i].id)); } catch (e) {}
+  upIndex().splice(i, 1);
+  save();
+  res.json({ ok: 1 });
+});
+
+
+/* ---------- CSV import (admin): students and staff ---------- */
+function parseCsvText(txt) {
+  const lines = String(txt).replace(/^\uFEFF/, "").split(/\r?\n/).filter(l => l.trim());
+  const cells = l => {
+    const out = []; let cur = "", q = false;
+    for (let i = 0; i < l.length; i++) {
+      const c = l[i];
+      if (q) { if (c === '"' && l[i + 1] === '"') { cur += '"'; i++; } else if (c === '"') q = false; else cur += c; }
+      else if (c === '"') q = true;
+      else if (c === ",") { out.push(cur.trim()); cur = ""; }
+      else cur += c;
+    }
+    out.push(cur.trim());
+    return out;
+  };
+  const rows = lines.map(cells);
+  const head = rows.shift().map(h => h.toLowerCase());
+  return rows.map(r => Object.fromEntries(head.map((h, i) => [h, r[i] || ""])));
+}
+
+const IMPORT_SPEC = {
+  stu: { cols: "id,name,grade,prog,parent_name,phone,sex", key: r => r.id, make: r => ({ id: r.id, name: r.name, grade: isNaN(Number(r.grade)) ? r.grade : Number(r.grade), prog: r.prog || "", pn: r.parent_name || "", phone: r.phone || "", sex: r.sex || "" }) },
+  staff: { cols: "id,name,type,phone", key: r => r.id, make: r => ({ id: r.id, name: r.name, type: r.type === "teacher" ? "teacher" : "staff", phone: r.phone || "" }) },
+  fee: { cols: "student_id,amount,date,note", key: () => null, make: (r, list) => {
+    const n = list.length + 1;
+    return { id: Date.now().toString(36) + n, no: "R-" + String(n).padStart(4, "0"), sid: r.student_id, date: r.date || new Date().toISOString().slice(0, 10), amt: Number(r.amount), note: r.note || "" };
+  }, valid: r => r.student_id && Number(r.amount) > 0 },
+  lib: { cols: "id,title,author,copies", key: r => r.id, make: r => ({ id: r.id, title: r.title, author: r.author || "", copies: Number(r.copies) || 1 }) },
+  news: { cols: "title,date", key: () => null, make: (r, list) => ({ id: Date.now().toString(36) + list.length, t: r.title, d: r.date || new Date().toISOString().slice(0, 10) }), valid: r => r.title },
+  tt: { cols: "grade,program,day,period,subject,teacher_id", key: () => null, make: r => ({ g: r.grade, p: r.program, d: r.day, s: r.period, subj: r.subject, tid: r.teacher_id }), valid: r => r.grade && r.day && r.period }
+};
+
+app.post("/api/import/:section", (req, res) => {
+  const u = requireAdmin(req, res);
+  if (!u) return;
+  const sec = req.params.section;
+  const spec = IMPORT_SPEC[sec];
+  if (!spec) return res.status(400).json({ error: "bad" });
+  const rows = parseCsvText(req.body.text || "");
+  if (!rows.length || rows.length > 2000) return res.status(400).json({ error: "badfile" });
+  const list = DB.docs[sec] || (DB.docs[sec] = []);
+  const seen = new Set(spec.key ? list.map(x => String(spec.key(x) || "").toLowerCase()) : []);
+  let added = 0, skipped = 0;
+  for (const r of rows) {
+    const valid = spec.valid ? spec.valid(r) : (r.id && r.name);
+    if (!valid) { skipped++; continue; }
+    const k = spec.key ? String(spec.key(r) || "").toLowerCase() : null;
+    if (k !== null && seen.has(k)) { skipped++; continue; }
+    list.push(spec.make(r, list));
+    if (k !== null) seen.add(k);
+    added++;
+  }
+  DB.v[sec] = (DB.v[sec] || 0) + 1;
+  save();
+  res.json({ added, skipped, v: DB.v[sec] });
+});
+
 app.get("/health", (req, res) => res.status(200).send("ok"));
 app.get("/api/health", (req, res) => res.json({ ok: 1, app: "naleti" }));
 

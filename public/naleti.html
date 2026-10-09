@@ -78,7 +78,7 @@ a{color:var(--g);font-weight:700}
 /* ---------- text ---------- */
 const T={
 en:{
-app:"Naleti Academy",login:"Sign in",out:"Sign out",user:"Username",pass:"Password",idl:"ID (admin, T001, N001)",pinl:"PIN",
+app:"Naleti Academy",up:"Upload",login:"Sign in",out:"Sign out",user:"Username",pass:"Password",idl:"ID (admin, T001, N001)",pinl:"PIN",
 bad:"Wrong ID or password.",wait:"Too many attempts. Try again in 5 minutes.",blocked:"This account is blocked. Ask the admin.",net:"Cannot reach the school server.",
 denied:"Not allowed.",auth:"Session ended. Please sign in again.",stale:"Someone else changed this data. It was refreshed, please repeat your change.",error:"Something went wrong.",
 exists:"This account already exists.",nolink:"Choose a person first.",weak:"Use at least 8 characters with a letter and a number.",samepw:"New password must be different.",userpw:"Password cannot be the username.",bad2:"Current password is wrong.",
@@ -205,8 +205,8 @@ const stuName=id=>(S.stu.find(x=>x.id===id)||{name:id}).name;
 const teachers=()=>S.staff.filter(x=>x.type==="teacher").sort(byName);
 
 /* ---------- shell ---------- */
-const TABS={admin:["master","stu","staff","att","satt","tt","mk","card","fee","lib","rep","news","usr","set"],teacher:["master","att","mk","card","tt","lib","news","set"],staff:["master","att","satt","tt","news","set"],parent:["card","att","fee","tt","lib","news","set"]};
-const SC={stu:stuS,master:masterS,staff:staffS,att:()=>attS("att"),satt:()=>attS("tatt"),tt:ttS,mk:mkS,card:cardS,fee:feeS,lib:libS,rep:repS,news:newsS,usr:usrS,set:setS};
+const TABS={admin:["master","stu","staff","att","satt","tt","mk","card","fee","lib","rep","news","usr","up","set"],teacher:["master","att","mk","card","tt","lib","news","up","set"],staff:["master","att","satt","tt","news","up","set"],parent:["card","att","fee","tt","lib","news","set"]};
+const SC={stu:stuS,master:masterS,staff:staffS,att:()=>attS("att"),satt:()=>attS("tatt"),tt:ttS,mk:mkS,card:cardS,fee:feeS,lib:libS,rep:repS,news:newsS,usr:usrS,up:upS,set:setS};
 function setLang(v){LG=v;try{localStorage.setItem("nl",v)}catch(_){}draw()}
 function setTheme(v){try{localStorage.setItem("nth",v)}catch(_){}if(v)document.documentElement.dataset.theme=v;else delete document.documentElement.dataset.theme}
 try{setTheme(localStorage.getItem("nth")||"")}catch(_){}
@@ -786,6 +786,66 @@ function repPrint(){const d=rdata();printHTML(`<h2>${e(S.cfg.school)}</h2><h3>${
 function dl(name,text,type){const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([text],{type:type||"application/json"}));a.download=name;document.body.appendChild(a);a.click();a.remove()}
 
 /* ---------- accounts ---------- */
+
+/* ---------- upload tab ---------- */
+const UP_SECS=[["stu","Students"],["staff","Staff"],["att","Attendance"],["tatt","Staff attendance"],["mk","Marks"],["tt","Timetable"],["fee","Fees"],["lib","Library"],["news","News"],["card","Report card"],["rep","Reports"]];
+let UP_SEC="stu",UP_LIST=[],UP_MSG="",UP_READY=false;
+async function upLoad(){UP_READY=true;try{UP_LIST=(await api("GET","/files?section="+UP_SEC)).files}catch(x){UP_LIST=[];UP_MSG=t(x)}}
+async function upGo(sec){UP_SEC=sec;UP_MSG="";await upLoad();draw()}
+async function upPick(inp){
+ const f=inp.files[0];if(!f)return;
+ if(f.size>8*1024*1024){UP_MSG="File too large (max 8 MB)";return draw()}
+ const r=new FileReader();
+ r.onload=async()=>{
+  try{
+   const b64=String(r.result).split(",")[1]||"";
+   await api("POST","/files",{section:UP_SEC,name:f.name,data:b64});
+   UP_MSG="Uploaded: "+f.name;await upLoad();
+  }catch(x){UP_MSG=t(x)==="error"?"Upload failed":t(x)}
+  draw();
+ };
+ r.readAsDataURL(f);
+}
+async function upDownload(id){
+ try{
+  const r=await fetch("/api/files/"+id,{headers:{Authorization:"Bearer "+TOK}});
+  if(!r.ok)throw new Error();
+  const bl=await r.blob();const a=document.createElement("a");
+  a.href=URL.createObjectURL(bl);a.download=(UP_LIST.find(x=>x.id===id)||{}).name||"file";a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+ }catch(x){UP_MSG="Download failed";draw()}
+}
+async function upDel(id){
+ if(!confirm("Delete this file?"))return;
+ try{await api("DELETE","/files/"+id);UP_MSG="Deleted";await upLoad()}catch(x){UP_MSG="Delete failed"}
+ draw();
+}
+
+const IMP_SECS=[["stu","Students","id,name,grade,prog,parent_name,phone,sex"],["staff","Staff","id,name,type,phone"],["fee","Fees","student_id,amount,date,note"],["lib","Library","id,title,author,copies"],["news","News","title,date"],["tt","Timetable","grade,program,day,period,subject,teacher_id"]];
+async function impPick(inp,sec){
+ const f=inp.files[0];if(!f)return;
+ if(f.size>2*1024*1024){UP_MSG="CSV too large (max 2 MB)";return draw()}
+ const txt=await f.text();
+ try{
+  const r=await api("POST","/import/"+sec,{text:txt});
+  UP_MSG="Imported "+r.added+", skipped "+r.skipped+" (duplicates or missing id/name)";
+  S[sec]=(await api("GET","/state")).docs[sec];V[sec]=r.v;
+ }catch(x){UP_MSG="Import failed: "+(x==="badfile"?"empty file or more than 2000 rows":t(x))}
+ inp.value="";draw();
+}
+function upS(){
+ if(MODE!=="server")return `<div class="card"><p>Uploads need the server version of the app.</p></div>`;
+ if(!UP_READY)upLoad().then(()=>draw());
+ const adm=U.role==="admin";
+ const opts=UP_SECS.map(([k,l])=>`<option value="${k}"${k===UP_SEC?" selected":""}>${e(l)}</option>`).join("");
+ const rows=UP_LIST.map(f=>`<tr><td>${e(f.name)}</td><td>${(f.size/1024).toFixed(1)} KB</td><td>${e(f.by)}</td><td>${e((f.at||"").slice(0,10))}</td><td><button class="ghost" onclick="upDownload('${e(f.id)}')">Download</button>${adm?` <button class="ghost" onclick="upDel('${e(f.id)}')">Delete</button>`:""}</td></tr>`).join("");
+ return `<div class="card"><h2>Upload</h2>
+ <div class="row"><label>Section <select onchange="upGo(this.value)">${opts}</select></label>
+ <label>File <input type="file" onchange="upPick(this)"></label></div>
+ ${adm?`<div class="card"><h3>Import CSV (admin)</h3><div class="row">${IMP_SECS.map(([k,l,c])=>`<label title="${e(c)}">${e(l)} <input type="file" accept=".csv,text/csv" onchange="impPick(this,'${k}')"></label>`).join("")}</div><p class="mut">${IMP_SECS.map(([k,l,c])=>`<b>${e(l)}</b>: ${e(c)}`).join("<br>")}</p></div>`:""}
+ ${UP_MSG?`<p role="status">${e(UP_MSG)}</p>`:""}
+ <table><thead><tr><th>File</th><th>Size</th><th>By</th><th>Date</th><th></th></tr></thead><tbody>${rows||`<tr><td colspan="5">No files in this section.</td></tr>`}</tbody></table></div>`;
+}
 function usrS(){return MODE==="server"?usrServer():usrLocal()}
 function usrServer(){
  const L=UR==="teacher"?teachers().map(x=>[x.id,x.name]):S.stu.slice().sort(byName).map(x=>[x.id,x.id+" "+x.name]);
